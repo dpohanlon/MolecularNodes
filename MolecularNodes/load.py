@@ -6,56 +6,128 @@ from . import data
 from . import assembly
 from . import nodes
 
+import requests
+import shutil
+import tempfile
+
+def molecules_af_list(
+    list_file,
+    center_molecule = False,
+    del_solvent = True,
+    include_bonds = True,
+    starting_style = 0,
+    setup_nodes = True
+    ):
+
+    af_ids = []
+
+    with open(list_file, 'r') as file:
+        for l in file:
+            af_ids.append(l.strip('\n'))
+
+    offset = np.array([0., 0., 0.])
+    mols = []
+
+    for af_id in af_ids:
+
+        mol = molecule_af(af_id, center_molecule = center_molecule,
+                            del_solvent = del_solvent,
+                            include_bonds = include_bonds,
+                            starting_style = starting_style,
+                            setup_nodes = setup_nodes,
+                            starting_color = 'random', offset = offset)
+
+        offset += np.array([0.0, 0.0, 1.5 * mol.dimensions.z])
+
+        mols.append(mol)
+
+    return mols
+
+def molecule_af(
+    af_code,
+    center_molecule = False,
+    del_solvent = True,
+    include_bonds = True,
+    starting_style = 0,
+    setup_nodes = True,
+    offset = None,
+    starting_color = 'random'
+    ):
+
+    url = f"https://alphafold.ebi.ac.uk/files/AF-{af_code}-F1-model_v4.pdb"
+
+    out_file = tempfile.NamedTemporaryFile("wb", suffix = '.pdb', delete = False)
+
+    response = requests.get(url)
+    out_file.write(response.content)
+
+    mol = molecule_local(
+        out_file.name,
+        mol_name = af_code,
+        center_molecule = center_molecule,
+        del_solvent = del_solvent,
+        include_bonds = include_bonds,
+        default_style = starting_style,
+        setup_nodes = setup_nodes,
+        starting_color = 'random',
+        offset = offset)
+
+    out_file.close()
+
+    return mol
+
 def molecule_rcsb(
-    pdb_code,               
-    center_molecule = False,               
-    del_solvent = True,               
-    include_bonds = True,   
-    starting_style = 0,               
-    setup_nodes = True              
+    pdb_code,
+    center_molecule = False,
+    del_solvent = True,
+    include_bonds = True,
+    starting_style = 0,
+    setup_nodes = True
     ):
     mol, file = open_structure_rcsb(
-        pdb_code = pdb_code, 
+        pdb_code = pdb_code,
         include_bonds=include_bonds
         )
-    
+
     mol_object, coll_frames = create_molecule(
         mol_array = mol,
         mol_name = pdb_code,
         file = file,
         calculate_ss = False,
         center_molecule = center_molecule,
-        del_solvent = del_solvent, 
+        del_solvent = del_solvent,
         include_bonds = include_bonds
         )
-    
+
     if setup_nodes:
         nodes.create_starting_node_tree(
-            obj = mol_object, 
-            coll_frames=coll_frames, 
+            obj = mol_object,
+            coll_frames=coll_frames,
             starting_style = starting_style
             )
-    
+
     mol_object['bio_transform_dict'] = file['bioAssemblyList']
-    
+
     return mol_object
 
 def molecule_local(
-    file_path,                    
-    mol_name = "Name",                   
-    include_bonds = True,                    
-    center_molecule = False,                    
-    del_solvent = True,                    
-    default_style = 0,                    
-    setup_nodes = True
-    ): 
-    
+    file_path,
+    mol_name = "Name",
+    include_bonds = True,
+    center_molecule = False,
+    del_solvent = True,
+    default_style = 0,
+    setup_nodes = True,
+    starting_color = 'random',
+    offset = None
+    ):
+
     import biotite.structure as struc
     import os
-    
+
     file_path = os.path.abspath(file_path)
     file_ext = os.path.splitext(file_path)[1]
-    
+
     if file_ext == '.pdb':
         mol, file = open_structure_local_pdb(file_path, include_bonds)
         transforms = assembly.get_transformations_pdb(file)
@@ -72,54 +144,56 @@ def molecule_local(
     # then attempt to find bonds by distance
     if include_bonds and not mol.bonds:
         mol.bonds = struc.connect_via_distances(mol[0], inter_residue=True)
-    
+
     if not (file_ext == '.pdb' and file.get_model_count() > 1):
         file = None
-        
-    
+
+
     mol_object, coll_frames = create_molecule(
         mol_array = mol,
         mol_name = mol_name,
         file = file,
         calculate_ss = True,
         center_molecule = center_molecule,
-        del_solvent = del_solvent, 
-        include_bonds = include_bonds
+        del_solvent = del_solvent,
+        include_bonds = include_bonds,
+        offset = offset
         )
-    
-    # setup the required initial node tree on the object 
+
+    # setup the required initial node tree on the object
     if setup_nodes:
         nodes.create_starting_node_tree(
             obj = mol_object,
             coll_frames = coll_frames,
-            starting_style = default_style
+            starting_style = default_style,
+            starting_color = starting_color,
             )
-    
+
     # if transforms:
         # mol_object['bio_transform_dict'] = (transforms)
         # mol_object['bio_transnform_dict'] = 'testing'
-        
+
     return mol_object
 
 
 def open_structure_rcsb(pdb_code, include_bonds = True):
     import biotite.structure.io.mmtf as mmtf
     import biotite.database.rcsb as rcsb
-    
+
     file = mmtf.MMTFFile.read(rcsb.fetch(pdb_code, "mmtf"))
-    
-    # returns a numpy array stack, where each array in the stack is a model in the 
+
+    # returns a numpy array stack, where each array in the stack is a model in the
     # the file. The stack will be of length = 1 if there is only one model in the file
-    mol = mmtf.get_structure(file, extra_fields = ["b_factor", "charge"], include_bonds = include_bonds) 
+    mol = mmtf.get_structure(file, extra_fields = ["b_factor", "charge"], include_bonds = include_bonds)
     return mol, file
 
 
 def open_structure_local_pdb(file_path, include_bonds = True):
     import biotite.structure.io.pdb as pdb
-    
+
     file = pdb.PDBFile.read(file_path)
-    
-    # returns a numpy array stack, where each array in the stack is a model in the 
+
+    # returns a numpy array stack, where each array in the stack is a model in the
     # the file. The stack will be of length = 1 if there is only one model in the file
     mol = pdb.get_structure(file, extra_fields = ['b_factor', 'charge'], include_bonds = include_bonds)
     return mol, file
@@ -127,10 +201,10 @@ def open_structure_local_pdb(file_path, include_bonds = True):
 def open_structure_local_pdbx(file_path, include_bonds = True):
     import biotite.structure as struc
     import biotite.structure.io.pdbx as pdbx
-    
+
     file = pdbx.PDBxFile.read(file_path)
-    
-    # returns a numpy array stack, where each array in the stack is a model in the 
+
+    # returns a numpy array stack, where each array in the stack is a model in the
     # the file. The stack will be of length = 1 if there is only one model in the file
     mol  = pdbx.get_structure(file, extra_fields = ['b_factor', 'charge'])
     # pdbx doesn't include bond information apparently, so manually create
@@ -182,15 +256,15 @@ def get_secondary_structure(mol_array, file) -> np.array:
     --------
     atom_sse : numpy.array
         Numerical numpy array representing the secondary structure of the molecule.
-    
+
     Description:
     ------------
     This function uses the biotite.structure package to extract the secondary structure information from the MMTF file.
     The resulting secondary structures are `1: Alpha Helix, 2: Beta-sheet, 3: loop`.
     """
-    
+
     from biotite.structure import spread_residue_wise
-    
+
     sec_struct_codes = {
         -1: "X",
         0 : "I",
@@ -202,7 +276,7 @@ def get_secondary_structure(mol_array, file) -> np.array:
         6 : "T",
         7 : "C"
     }
-    
+
     dssp_to_abc = {
         "X" : 0,
         "I" : 1, #"a",
@@ -214,7 +288,7 @@ def get_secondary_structure(mol_array, file) -> np.array:
         "T" : 3, #"c",
         "C" : 3 #"c"
     }
-    
+
     try:
         sse = file["secStructList"]
     except KeyError:
@@ -223,11 +297,11 @@ def get_secondary_structure(mol_array, file) -> np.array:
             to "loop" for all residues.')
     else:
         ss_int = np.array(
-            [dssp_to_abc.get(sec_struct_codes.get(ss)) for ss in sse], 
+            [dssp_to_abc.get(sec_struct_codes.get(ss)) for ss in sse],
             dtype = int
         )
     atom_sse = spread_residue_wise(mol_array, ss_int)
-    
+
     return atom_sse
 
 
@@ -247,51 +321,54 @@ def comp_secondary_structure(mol_array):
     #TODO Read 'secStructList' field from mmtf files
     from biotite.structure import annotate_sse, spread_residue_wise
 
-    conv_sse_char_int = {'a': 1, 'b': 2, 'c': 3, '': 0} 
+    conv_sse_char_int = {'a': 1, 'b': 2, 'c': 3, '': 0}
 
     char_sse = annotate_sse(mol_array)
     int_sse = np.array([conv_sse_char_int[char] for char in char_sse], dtype=int)
     atom_sse = spread_residue_wise(mol_array, int_sse)
-        
+
     return atom_sse
 
-def create_molecule(mol_array, 
-                    mol_name, 
-                    center_molecule = False, 
+def create_molecule(mol_array,
+                    mol_name,
+                    center_molecule = False,
                     file = None,
                     calculate_ss = False,
-                    del_solvent = False, 
-                    include_bonds = False, 
-                    collection = None
+                    del_solvent = False,
+                    include_bonds = False,
+                    collection = None,
+                    offset = None
                     ):
     import biotite.structure as struc
-    
+
     if np.shape(mol_array)[0] > 1:
         mol_frames = mol_array
     else:
         mol_frames = None
-    
+
     mol_array = mol_array[0]
-    
+
     # remove the solvent from the structure if requested
     if del_solvent:
         mol_array = mol_array[np.invert(struc.filter_solvent(mol_array))]
 
     world_scale = 0.01
     locations = mol_array.coord * world_scale
-    
+
     centroid = np.array([0, 0, 0])
     if center_molecule:
         centroid = struc.centroid(mol_array) * world_scale
-    
+
 
     # subtract the centroid from all of the positions to localise the molecule on the world origin
     if center_molecule:
         locations = locations - centroid
+        if not (offset is None):
+            locations += offset + 0.5 * (np.max(locations[:,-1]) - np.min(locations[:,-1]))
 
     if not collection:
         collection = coll.mn()
-    
+
     if include_bonds and mol_array.bonds:
         bonds = mol_array.bonds.as_array()
         mol_object = create_object(name = mol_name, collection = collection, locations = locations, bonds = bonds[:, [0,1]])
@@ -303,19 +380,19 @@ def create_molecule(mol_array,
     # loop will the call fail if the attribute isn't accessible, and the warning is reported
     # there rather than setting up a try: except: for each individual attribute which makes
     # some really messy code.
-    
-    # I still don't like this as an implementation, and welcome any cleaner approaches that 
+
+    # I still don't like this as an implementation, and welcome any cleaner approaches that
     # anybody might have.
-    
+
     def att_atomic_number():
         atomic_number = np.array(list(map(
-            lambda x: data.elements.get(x, {'atomic_number': -1}).get("atomic_number"), 
+            lambda x: data.elements.get(x, {'atomic_number': -1}).get("atomic_number"),
             np.char.title(mol_array.element))))
         return atomic_number
-    
+
     def att_res_id():
         return mol_array.res_id
-    
+
     def att_res_name():
         other_res = []
         counter = 0
@@ -324,17 +401,17 @@ def create_molecule(mol_array,
         res_names_new = []
         res_ids = mol_array.res_id
         res_nums  = []
-        
+
         for name in res_names:
             res_num = data.residues.get(name, {'res_name_num': 9999}).get('res_name_num')
-            
+
             if res_num == 9999:
                 if res_names[counter - 1] != name or res_ids[counter] != res_ids[counter - 1]:
                     id_counter += 1
-                
+
                 unique_res_name = str(id_counter + 100) + "_" + str(name)
                 other_res.append(unique_res_name)
-                
+
                 num = np.where(np.isin(np.unique(other_res), unique_res_name))[0][0] + 100
                 res_nums.append(num)
             else:
@@ -344,42 +421,42 @@ def create_molecule(mol_array,
         mol_object['ligands'] = np.unique(other_res)
         return np.array(res_nums)
 
-    
+
     def att_chain_id():
         chain_id = np.searchsorted(np.unique(mol_array.chain_id), mol_array.chain_id)
         return chain_id
-    
+
     def att_b_factor():
         return mol_array.b_factor
-    
+
     def att_vdw_radii():
         vdw_radii =  np.array(list(map(
             # divide by 100 to convert from picometres to angstroms which is what all of coordinates are in
-            lambda x: data.elements.get(x, {'vdw_radii': 100}).get('vdw_radii', 100) / 100,  
+            lambda x: data.elements.get(x, {'vdw_radii': 100}).get('vdw_radii', 100) / 100,
             np.char.title(mol_array.element)
             )))
         return vdw_radii * world_scale
-    
+
     def att_atom_name():
         atom_name = np.array(list(map(
-            lambda x: data.atom_names.get(x, 9999), 
+            lambda x: data.atom_names.get(x, 9999),
             mol_array.atom_name
         )))
-        
+
         return atom_name
-    
+
     def att_is_alpha():
         return np.isin(mol_array.atom_name, 'CA')
-    
+
     def att_is_solvent():
         return struc.filter_solvent(mol_array)
-    
+
     def att_is_backbone():
         """
         Get the atoms that appear in peptide backbone or nucleic acid phosphate backbones.
         Filter differs from the Biotite's `struc.filter_peptide_backbone()` in that this
-        includes the peptide backbone oxygen atom, which biotite excludes. Additionally 
-        this selection also includes all of the atoms from the ribose in nucleic acids, 
+        includes the peptide backbone oxygen atom, which biotite excludes. Additionally
+        this selection also includes all of the atoms from the ribose in nucleic acids,
         and the other phosphate oxygens.
         """
         backbone_atom_names = [
@@ -388,25 +465,25 @@ def create_molecule(mol_array,
             "O1P", "OP1", "O2P", "OP2",             # alternative names for phosphate O's
             "O4'", "C1'", "C2'", "O2'"              # remaining ribose atoms
         ]
-        
+
         is_backbone = np.logical_and(
-            np.isin(mol_array.atom_name, backbone_atom_names), 
+            np.isin(mol_array.atom_name, backbone_atom_names),
             np.logical_not(struc.filter_solvent(mol_array))
         )
         return is_backbone
-    
+
     def att_is_nucleic():
         return struc.filter_nucleotides(mol_array)
-    
+
     def att_is_peptide():
         aa = struc.filter_amino_acids(mol_array)
         con_aa = struc.filter_canonical_amino_acids(mol_array)
-        
+
         return aa | con_aa
-    
+
     def att_is_hetero():
         return mol_array.hetero
-    
+
     def att_is_carb():
         return struc.filter_carbohydrates(mol_array)
 
@@ -415,7 +492,7 @@ def create_molecule(mol_array,
             return comp_secondary_structure(mol_array)
         else:
             return get_secondary_structure(mol_array, file)
-    
+
 
     # Add information about the bond types to the model on the edge domain
     # Bond types: 'ANY' = 0, 'SINGLE' = 1, 'DOUBLE' = 2, 'TRIPLE' = 3, 'QUADRUPLE' = 4
@@ -424,16 +501,16 @@ def create_molecule(mol_array,
     if include_bonds:
         try:
             add_attribute(
-                object = mol_object, 
-                name = 'bond_type', 
+                object = mol_object,
+                name = 'bond_type',
                 data = bonds[:, 2].copy(order = 'C'), # the .copy(order = 'C') is to fix a weird ordering issue with the resulting array
-                type = "INT", 
+                type = "INT",
                 domain = "EDGE"
                 )
         except:
             warnings.warn('Unable to add bond types to the molecule.')
 
-    
+
     # these are all of the attributes that will be added to the structure
     # TODO add capcity for selection of particular attributes to include / not include to potentially
     # boost performance, unsure if actually a good idea of not. Need to do some testing.
@@ -454,7 +531,7 @@ def create_molecule(mol_array,
         {'name': 'is_carb',         'value': att_is_carb,             'type': 'BOOLEAN', 'domain': 'POINT'},
         {'name': 'sec_struct',      'value': att_sec_struct,          'type': 'INT',     'domain': 'POINT'}
     )
-    
+
     # assign the attributes to the object
     for att in attributes:
         # try:
@@ -467,13 +544,13 @@ def create_molecule(mol_array,
             b_factors = pdb_get_b_factors(file)
         except:
             b_factors = None
-        
+
         coll_frames = coll.frames(mol_object.name)
-        
+
         for i, frame in enumerate(mol_frames):
             obj_frame = create_object(
-                name = mol_object.name + '_frame_' + str(i), 
-                collection=coll_frames, 
+                name = mol_object.name + '_frame_' + str(i),
+                collection=coll_frames,
                 locations= frame.coord * world_scale - centroid
             )
             if b_factors:
@@ -481,33 +558,33 @@ def create_molecule(mol_array,
                     add_attribute(obj_frame, 'b_factor', b_factors[i])
                 except:
                     b_factors = False
-        
+
         # disable the frames collection so it is not seen
         bpy.context.view_layer.layer_collection.children[collection.name].children[coll_frames.name].exclude = True
     else:
         coll_frames = None
-    
+
     # add custom properties to the actual blender object, such as number of chains, biological assemblies etc
     # currently biological assemblies can be problematic to holding off on doing that
     try:
         mol_object['chain_id_unique'] = list(np.unique(mol_array.chain_id))
     except:
         warnings.warn('No chain information detected.')
-    
+
     return mol_object, coll_frames
 
 
 def load_star_file(
-    file_path, 
-    obj_name = 'NewStarInstances', 
+    file_path,
+    obj_name = 'NewStarInstances',
     node_tree = True,
-    world_scale =  0.01 
+    world_scale =  0.01
     ):
     import starfile
     from eulerangles import ConversionMeta, convert_eulers
-    
+
     star = starfile.read(file_path, always_dict=True)
-    
+
     star_type = None
     # only RELION 3.1 and cisTEM STAR files are currently supported, fail gracefully
     if 'particles' in star and 'optics' in star:
@@ -518,27 +595,27 @@ def load_star_file(
         raise ValueError(
         'File is not a valid RELION>=3.1 or cisTEM STAR file, other formats are not currently supported.'
         )
-    
-    # Get absolute position and orientations    
+
+    # Get absolute position and orientations
     if star_type == 'relion':
         df = star['particles'].merge(star['optics'], on='rlnOpticsGroup')
 
         # get necessary info from dataframes
-        # Standard cryoEM starfile don't have rlnCoordinateZ. If this column is not present 
+        # Standard cryoEM starfile don't have rlnCoordinateZ. If this column is not present
         # Set it to "0"
         if "rlnCoordinateZ" not in df:
             df['rlnCoordinateZ'] = 0
-            
+
         xyz = df[['rlnCoordinateX', 'rlnCoordinateY', 'rlnCoordinateZ']].to_numpy()
         pixel_size = df['rlnImagePixelSize'].to_numpy().reshape((-1, 1))
         xyz *= pixel_size
         shift_column_names = ['rlnOriginXAngst', 'rlnOriginYAngst', 'rlnOriginZAngst']
         if all([col in df.columns for col in shift_column_names]):
             shifts_ang = df[shift_column_names].to_numpy()
-            xyz -= shifts_ang 
+            xyz -= shifts_ang
         euler_angles = df[['rlnAngleRot', 'rlnAngleTilt', 'rlnAnglePsi']].to_numpy()
         image_id = df['rlnMicrographName'].astype('category').cat.codes.to_numpy()
-        
+
     elif star_type == 'cistem':
         df = star[0]
         df['cisTEMZFromDefocus'] = (df['cisTEMDefocus1'] + df['cisTEMDefocus2']) / 2
@@ -548,18 +625,18 @@ def load_star_file(
         image_id = df['cisTEMOriginalImageFilename'].astype('category').cat.codes.to_numpy()
 
     # coerce starfile Euler angles to Blender convention
-    
-    target_metadata = ConversionMeta(name='output', 
-                                    axes='xyz', 
+
+    target_metadata = ConversionMeta(name='output',
+                                    axes='xyz',
                                     intrinsic=False,
                                     right_handed_rotation=True,
                                     active=True)
-    eulers = np.deg2rad(convert_eulers(euler_angles, 
-                               source_meta='relion', 
+    eulers = np.deg2rad(convert_eulers(euler_angles,
+                               source_meta='relion',
                                target_meta=target_metadata))
 
     obj = create_object(obj_name, coll.mn(), xyz * world_scale)
-    
+
     # vectors have to be added as a 1D array currently
     rotations = eulers.reshape(len(eulers) * 3)
     # create the attribute and add the data for the rotations
@@ -583,9 +660,8 @@ def load_star_file(
             attribute.data.foreach_set('value', codes.to_numpy().reshape(-1))
             # Add the category names as a property to the blender object
             obj[col + '_categories'] = list(df[col].astype('category').cat.categories)
-    
+
     if node_tree:
         nodes.create_starting_nodes_starfile(obj)
-    
+
     return obj
-    
